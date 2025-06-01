@@ -1,133 +1,85 @@
-#include <Arduino.h>
-#include <ESP32Servo.h>
-#include <AccelStepper.h>
+#include "HardwareSerial.h"
+#include "Print.h"
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
-//GLOBAL VARIABLES//
+BLECharacteristic* pCharacteristic;
+bool dataReady = false;
+String receivedLabel;
+String receivedData;
 
-// Define pin connections stepper motor 1
-#define DIR1 23
-#define STEP1 22
-#define MS11 18
-#define MS12 19   //motor one, pin 2
-#define MS13 21
-#define EN1 5
+#define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-//Define pin connections stepper motor 2
-#define DIR2 25
-#define STEP2 26
-#define MS21 12
-#define MS22 14   //motor twos, pin 2
-#define MS23 27
-#define EN2 13
+struct ArmCommand {
+  String gcode;
+  float angle1;
+  float angle2;
+};
 
-//Define Servo connections
-#define SERV 17
+const int MAX_COMMANDS = 100;
+ArmCommand commandList[MAX_COMMANDS];
+int commandCount = 0;
 
-//create two new accelstepper objects 
-AccelStepper stepper1(AccelStepper::DRIVER, STEP1, DIR1);
-AccelStepper stepper2(AccelStepper::DRIVER, STEP2, DIR2);
 
-//motor's steps per revolution
-const int stepsPerRevolution = 200;
-Servo myServo; //servo object
-
-volatile bool paused = false;
-volatile uint32_t lastInterrupt = 0;
-
-#define PAUSESWITCH 4
-#define BUILTIN_LED 2
-
-void IRAM_ATTR handlePauseInterrupt() {
-  uint32_t now = millis();
-  if (now - lastInterrupt > 200) {
-    paused = !paused;
-    lastInterrupt = now;
-    if (paused) {
-      digitalWrite(BUILTIN_LED, HIGH);
-    } else {
-      digitalWrite(BUILTIN_LED, LOW);
-    }
-  }
-}
-
-void setupMicrostepping1(int mode) {
-  Serial.println("IN SETUP M1");
-  // mode: 1=full, 2=half, 4=quarter, 8=eighth, 16=sixteenth
-  switch (mode) {
-    case 1:
-      digitalWrite(MS11, LOW); digitalWrite(MS12, LOW); digitalWrite(MS13, LOW); break;
-    case 2:
-      digitalWrite(MS11, HIGH); digitalWrite(MS12, LOW); digitalWrite(MS13, LOW); break;
-    case 4:
-      digitalWrite(MS11, LOW); digitalWrite(MS12, HIGH); digitalWrite(MS13, LOW); break;
-    case 8:
-      digitalWrite(MS11, HIGH); digitalWrite(MS12, HIGH); digitalWrite(MS13, LOW); break;
-    case 16:
-      digitalWrite(MS11, HIGH); digitalWrite(MS12, HIGH); digitalWrite(MS13, HIGH); break;
-  }
-}
-
-void setupMicrostepping2(int mode) {
-  Serial.println("IN SETUP M2");
-  // mode: 1=full, 2=half, 4=quarter, 8=eighth, 16=sixteenth
-  switch (mode) {
-    case 1:
-      digitalWrite(MS21, LOW); digitalWrite(MS22, LOW); digitalWrite(MS23, LOW); break;
-    case 2:
-      digitalWrite(MS21, HIGH); digitalWrite(MS22, LOW); digitalWrite(MS23, LOW); break;
-    case 4:
-      digitalWrite(MS21, LOW); digitalWrite(MS22, HIGH); digitalWrite(MS23, LOW); break;
-    case 8:
-      digitalWrite(MS21, HIGH); digitalWrite(MS22, HIGH); digitalWrite(MS23, LOW); break;
-    case 16:
-      digitalWrite(MS21, HIGH); digitalWrite(MS22, HIGH); digitalWrite(MS23, HIGH); break;
-  }
-}
-
-void rotateDegrees(float degrees1, float degrees2, int microstepMode) {
-  Serial.println("IN ROTATE DEGREES");
-  int totalStepsPerRev = stepsPerRevolution * microstepMode;
-  setupMicrostepping1(microstepMode);
-  setupMicrostepping2(microstepMode);
-
-  //Calculate how many steps needed
-  float steps1 = (-1) * (degrees1 / 360) * totalStepsPerRev * 3;
-  float steps2 = (degrees2 / 360) * totalStepsPerRev;
-
-  stepper1.move(steps1);
-  stepper2.move(steps2);
-
-  // move the motors
-  while(stepper1.distanceToGo() != 0 || stepper2.distanceToGo() != 0) {
-    while (paused) {
-      //Serial.println("IN FUCKING PAUSED");
-      delay(10);
-    }
-    //Serial.println("IN WHILE LOOP");
-    stepper1.run();
-    stepper2.run();
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    Serial.println("Client connected");
   }
 
-  
-}
+  void onDisconnect(BLEServer* pServer) {
+    Serial.println("Client disconnected, restarting advertising...");
+    dataReady = true;
+    delay(500); // Optional: small delay helps avoid advertising glitches
+    pServer->getAdvertising()->start();
+  }
+};
 
-void setupPins() {
-  pinMode(STEP1, OUTPUT);
-  pinMode(DIR1, OUTPUT);
-  pinMode(MS11, OUTPUT);
-  pinMode(MS12, OUTPUT);
-  pinMode(MS13, OUTPUT);
-  pinMode(EN1, OUTPUT);
+class MyCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* pCharacteristic) {
+    ArmCommand cmd;
+    String value = pCharacteristic->getValue();
 
-  pinMode(STEP2, OUTPUT);
-  pinMode(DIR2, OUTPUT);
-  pinMode(MS21, OUTPUT);
-  pinMode(MS22, OUTPUT);
-  pinMode(MS23, OUTPUT);
-  pinMode(EN2, OUTPUT);
+    //Serial.print("Received: ");
+    //Serial.println(value.c_str());
 
-  pinMode(SERV, OUTPUT);
-  pinMode(LED_BUILTIN, OUTPUT);
+    size_t colonPos = value.indexOf(":");
+    receivedLabel = value.substring(0, colonPos);
+    receivedData = value.substring(colonPos + 1);
+    //Serial.print("Label: ");
+    //Serial.println(receivedLabel.c_str());
+    //Serial.print("Data: ");
+    //Serial.println(receivedData.c_str());
+    
+    //Rips gcode from value and stores it in cmd.
+    int gStart = value.indexOf("'gcode': '") + 10;
+    int gEnd = value.indexOf("'", gStart);
+    cmd.gcode = value.substring(gStart, gEnd);
+    //Serial.println(cmd.gcode);
 
-  myServo.attach(SERV);
-}
+    //Rips angle2 from value and stores it in cmd
+    int twoStart = value.indexOf("'a2': ") + 6;
+    int twoEnd = value.indexOf(",", twoStart);
+    String two = value.substring(twoStart, twoEnd);
+    //Serial.println(two);
+    cmd.angle2 = two.toFloat();
+    //Serial.println(cmd.angle2, 9);
+
+    //Rips angle1 from value and stores it in cmd
+    int oneStart = value.indexOf("'a1': ") + 6;
+    int oneEnd = value.indexOf("}", oneStart);
+    String one = value.substring(oneStart, oneEnd);
+    //Serial.println(one);
+    cmd.angle1 = one.toFloat();
+    //Serial.println(cmd.angle1, 9);
+
+    commandList[commandCount] = cmd;
+    commandCount++;
+
+    // Example: respond with the label
+    pCharacteristic->setValue(receivedLabel);
+    pCharacteristic->notify();
+  }
+};
