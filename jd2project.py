@@ -3,24 +3,47 @@ import time
 import asyncio
 from bleak import BleakClient
 import math
+from tkinter import Tk
+from tkinter.filedialog import askopenfilename
+
 
 #arm length in millimeters
-arm1_length = 221
-arm2_length = 184
+arm1_length = 225
+arm2_length = 188
 
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 MAX_CONNECT_ATTEMPTS = 10
 
 
-def read_json(json_path):
-    """
+"""def read_json(json_path):
+    
     Reads from a json file and returns the gcode commands in order from top to bottom.
 
     :param json_path: A string which represents the json file path.
 
     :return: A list of strings that represent gcode commands and coordinates
+    
+    with open(json_path, 'r') as file:
+        data = json.load(file)
+        return data"""
+
+
+def read_json():
     """
+    Opens a file picker dialog and reads G-code JSON from the selected file.
+
+    :return: A list of G-code command dicts or None if cancelled.
+    """
+    Tk().withdraw()  # Hide root window
+    json_path = askopenfilename(
+        title="Select G-code JSON file",
+        filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+    )
+    if not json_path:
+        print("No file selected.")
+        return None
+
     with open(json_path, 'r') as file:
         data = json.load(file)
         return data
@@ -66,8 +89,8 @@ def compute_angles(commands):
     for item in commands:
         temp_dict = dict()
         temp_dict["gcode"] = item["gcode"]
-        a2 = angle2(item['x'], item['y'])
-        a1 = angle1(item["x"], item["y"], a2)
+        a2 = angle2(item['x'] + 50, item['y'] + 50)
+        a1 = angle1(item["x"] + 50, item["y"] + 50, a2)
         temp_dict["a2"] = a2 * (180/math.pi)
         temp_dict["a1"] = a1 * (180/math.pi)
         messages.append(temp_dict)
@@ -144,7 +167,7 @@ async def main():
     address = "E0F2723A-DDED-FBEB-D5D7-8908EF925A6D"
 
     #read the json file and store the commands as a list
-    commands = read_json('points.json')
+    commands = read_json()
     message = compute_angles(commands)
     #print(message)
 
